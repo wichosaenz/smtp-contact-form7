@@ -9,6 +9,7 @@
  * @package CF7_SMTP_Bridge
  * @since   1.0.0
  * @since   2.0.0 Added Gmail API transport and OAuth 2.0 support.
+ * @since   2.1.0 Alias/masked sender support with improved field descriptions.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -253,9 +254,9 @@ class CF7_SMTP_Settings {
 			'description' => __( 'Persistent refresh token. You can paste it manually or authorize below.', 'cf7-smtp-bridge' ),
 		) );
 
-		$this->add_field( 'gmail_sender_email', __( 'Sender Email', 'cf7-smtp-bridge' ), 'render_field_text', 'cf7_smtp_section_gmail', array(
-			'placeholder' => 'noreply@theeverestgroup.com',
-			'description' => __( 'The Gmail/Google Workspace account used for sending.', 'cf7-smtp-bridge' ),
+		$this->add_field( 'gmail_sender_email', __( 'Sender Email (or Alias)', 'cf7-smtp-bridge' ), 'render_field_text', 'cf7_smtp_section_gmail', array(
+			'placeholder' => 'expansion@theeverestgroup.mx',
+			'description' => __( 'The email address used in the From header. You can enter an alias (e.g., expansion@yourdomain.com) instead of the primary authenticated account. The alias must be previously configured in your Google Workspace account under Settings > Accounts > "Send mail as".', 'cf7-smtp-bridge' ),
 			'type'        => 'email',
 		) );
 
