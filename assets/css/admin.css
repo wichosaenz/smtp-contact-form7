@@ -1,0 +1,41 @@
+/**
+ * CF7 SMTP Bridge — Admin Styles
+ *
+ * @package CF7_SMTP_Bridge
+ * @since   1.0.0
+ */
+
+.cf7-smtp-wrap h2 {
+	margin-top: 2em;
+	padding-bottom: 0.5em;
+	border-bottom: 1px solid #c3c4c7;
+}
+
+.cf7-smtp-wrap .form-table th {
+	width: 200px;
+}
+
+.cf7-smtp-log {
+	max-height: 400px;
+	overflow-y: auto;
+	padding: 12px;
+	background: #1d2327;
+	color: #a7aaad;
+	font-family: Consolas, Monaco, monospace;
+	font-size: 12px;
+	line-height: 1.6;
+	border-radius: 4px;
+	white-space: pre-wrap;
+	word-wrap: break-word;
+}
+
+#cf7-smtp-test-result {
+	font-weight: 600;
+}
+
+/* Responsive adjustments */
+@media screen and (max-width: 782px) {
+	.cf7-smtp-wrap .form-table th {
+		width: auto;
+	}
+}
