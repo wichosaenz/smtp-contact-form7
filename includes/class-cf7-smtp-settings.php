@@ -1,13 +1,14 @@
 <?php
 /**
- * Admin settings page for SMTP configuration.
+ * Admin settings page for SMTP / Gmail API configuration.
  *
  * Registers a settings page under Settings > CF7 SMTP Bridge with fields
- * for SMTP host, port, encryption, username, password, and CF7-specific
- * auto-reply / CC options.
+ * for transport selection (SMTP or Gmail API), SMTP credentials, Gmail API
+ * OAuth 2.0 credentials, and CF7-specific auto-reply / CC options.
  *
  * @package CF7_SMTP_Bridge
  * @since   1.0.0
+ * @since   2.0.0 Added Gmail API transport and OAuth 2.0 support.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -52,12 +53,21 @@ class CF7_SMTP_Settings {
 	private CF7_SMTP_Logger $logger;
 
 	/**
+	 * OAuth instance.
+	 *
+	 * @var CF7_SMTP_OAuth|null
+	 */
+	private ?CF7_SMTP_OAuth $oauth;
+
+	/**
 	 * Constructor.
 	 *
-	 * @param CF7_SMTP_Logger $logger Logger instance.
+	 * @param CF7_SMTP_Logger    $logger Logger instance.
+	 * @param CF7_SMTP_OAuth|null $oauth  OAuth instance (optional).
 	 */
-	public function __construct( CF7_SMTP_Logger $logger ) {
+	public function __construct( CF7_SMTP_Logger $logger, ?CF7_SMTP_OAuth $oauth = null ) {
 		$this->logger = $logger;
+		$this->oauth  = $oauth;
 	}
 
 	/**
@@ -68,9 +78,11 @@ class CF7_SMTP_Settings {
 	public function init(): void {
 		add_action( 'admin_menu', array( $this, 'add_settings_page' ) );
 		add_action( 'admin_init', array( $this, 'register_settings' ) );
+		add_action( 'admin_init', array( $this, 'handle_oauth_callback' ) );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_styles' ) );
 		add_action( 'wp_ajax_cf7_smtp_test_connection', array( $this, 'ajax_test_connection' ) );
 		add_action( 'wp_ajax_cf7_smtp_clear_log', array( $this, 'ajax_clear_log' ) );
+		add_action( 'wp_ajax_cf7_smtp_revoke_oauth', array( $this, 'ajax_revoke_oauth' ) );
 	}
 
 	/**
@@ -80,19 +92,37 @@ class CF7_SMTP_Settings {
 	 */
 	public static function get_defaults(): array {
 		return array(
+			// Transport selection.
+			'transport'       => 'smtp',
+
+			// SMTP settings.
 			'smtp_host'       => '',
 			'smtp_port'       => '587',
 			'smtp_encryption' => 'tls',
 			'smtp_username'   => '',
 			'smtp_password'   => '',
+
+			// Gmail API settings.
+			'gmail_client_id'     => '',
+			'gmail_client_secret' => '',
+			'gmail_refresh_token' => '',
+			'gmail_sender_email'  => '',
+
+			// Sender identity.
 			'from_email'      => '',
 			'from_name'       => '',
+
+			// Auto-reply.
 			'enable_autoreply'    => '0',
 			'autoreply_subject'   => __( 'We have received your message', 'cf7-smtp-bridge' ),
 			'autoreply_body'      => __( "Hello [your-name],\n\nThank you for contacting us. We have received your message and will respond shortly.\n\nBest regards.", 'cf7-smtp-bridge' ),
+
+			// CC / BCC.
 			'enable_cc'           => '0',
 			'cc_email'            => '',
 			'cc_type'             => 'bcc',
+
+			// Logging.
 			'enable_logging'      => '1',
 		);
 	}
@@ -111,9 +141,15 @@ class CF7_SMTP_Settings {
 
 		$settings = wp_parse_args( $saved, self::get_defaults() );
 
-		// Decrypt password on read.
+		// Decrypt sensitive fields on read.
 		if ( ! empty( $settings['smtp_password'] ) ) {
 			$settings['smtp_password'] = CF7_SMTP_Encryption::decrypt( $settings['smtp_password'] );
+		}
+		if ( ! empty( $settings['gmail_client_secret'] ) ) {
+			$settings['gmail_client_secret'] = CF7_SMTP_Encryption::decrypt( $settings['gmail_client_secret'] );
+		}
+		if ( ! empty( $settings['gmail_refresh_token'] ) ) {
+			$settings['gmail_refresh_token'] = CF7_SMTP_Encryption::decrypt( $settings['gmail_refresh_token'] );
 		}
 
 		return $settings;
@@ -148,6 +184,16 @@ class CF7_SMTP_Settings {
 				'sanitize_callback' => array( $this, 'sanitize_settings' ),
 			)
 		);
+
+		// ── Transport Section ─────────────────────────────────────────
+		add_settings_section(
+			'cf7_smtp_section_transport',
+			__( 'Mail Transport', 'cf7-smtp-bridge' ),
+			array( $this, 'render_section_transport' ),
+			self::PAGE_SLUG
+		);
+
+		$this->add_field( 'transport', __( 'Transport Method', 'cf7-smtp-bridge' ), 'render_field_transport', 'cf7_smtp_section_transport' );
 
 		// ── SMTP Section ──────────────────────────────────────────────
 		add_settings_section(
@@ -185,6 +231,36 @@ class CF7_SMTP_Settings {
 			'description' => __( 'Stored with AES-256 encryption using your WordPress security keys.', 'cf7-smtp-bridge' ),
 		) );
 
+		// ── Gmail API Section ─────────────────────────────────────────
+		add_settings_section(
+			'cf7_smtp_section_gmail',
+			__( 'Gmail API Configuration (OAuth 2.0)', 'cf7-smtp-bridge' ),
+			array( $this, 'render_section_gmail' ),
+			self::PAGE_SLUG
+		);
+
+		$this->add_field( 'gmail_client_id', __( 'Client ID', 'cf7-smtp-bridge' ), 'render_field_text', 'cf7_smtp_section_gmail', array(
+			'placeholder' => 'xxxxx.apps.googleusercontent.com',
+			'description' => __( 'OAuth 2.0 Client ID from Google Cloud Console.', 'cf7-smtp-bridge' ),
+			'class'       => 'large-text',
+		) );
+
+		$this->add_field( 'gmail_client_secret', __( 'Client Secret', 'cf7-smtp-bridge' ), 'render_field_password', 'cf7_smtp_section_gmail', array(
+			'description' => __( 'OAuth 2.0 Client Secret. Stored encrypted with AES-256.', 'cf7-smtp-bridge' ),
+		) );
+
+		$this->add_field( 'gmail_refresh_token', __( 'Refresh Token', 'cf7-smtp-bridge' ), 'render_field_password', 'cf7_smtp_section_gmail', array(
+			'description' => __( 'Persistent refresh token. You can paste it manually or authorize below.', 'cf7-smtp-bridge' ),
+		) );
+
+		$this->add_field( 'gmail_sender_email', __( 'Sender Email', 'cf7-smtp-bridge' ), 'render_field_text', 'cf7_smtp_section_gmail', array(
+			'placeholder' => 'noreply@theeverestgroup.com',
+			'description' => __( 'The Gmail/Google Workspace account used for sending.', 'cf7-smtp-bridge' ),
+			'type'        => 'email',
+		) );
+
+		$this->add_field( 'gmail_oauth_status', __( 'OAuth Status', 'cf7-smtp-bridge' ), 'render_field_oauth_status', 'cf7_smtp_section_gmail' );
+
 		// ── From Section ──────────────────────────────────────────────
 		add_settings_section(
 			'cf7_smtp_section_from',
@@ -195,7 +271,7 @@ class CF7_SMTP_Settings {
 
 		$this->add_field( 'from_email', __( 'From Email', 'cf7-smtp-bridge' ), 'render_field_text', 'cf7_smtp_section_from', array(
 			'placeholder' => 'noreply@yourdomain.com',
-			'description' => __( 'The "From" address for outgoing emails. Leave blank to use WordPress default.', 'cf7-smtp-bridge' ),
+			'description' => __( 'The "From" address for outgoing emails. Leave blank to use transport default.', 'cf7-smtp-bridge' ),
 			'type'        => 'email',
 		) );
 
@@ -259,7 +335,7 @@ class CF7_SMTP_Settings {
 		);
 
 		$this->add_field( 'enable_logging', __( 'Enable Logging', 'cf7-smtp-bridge' ), 'render_field_checkbox', 'cf7_smtp_section_logging', array(
-			'label' => __( 'Log SMTP events and errors for debugging.', 'cf7-smtp-bridge' ),
+			'label' => __( 'Log mail transport events and errors for debugging.', 'cf7-smtp-bridge' ),
 		) );
 	}
 
@@ -308,12 +384,34 @@ class CF7_SMTP_Settings {
 	// ─── Section Descriptions ──────────────────────────────────────
 
 	/**
+	 * Render Transport section description.
+	 *
+	 * @return void
+	 */
+	public function render_section_transport(): void {
+		echo '<p>' . esc_html__( 'Choose how WordPress sends emails. Gmail API uses OAuth 2.0 and bypasses SMTP entirely. SMTP uses traditional server authentication.', 'cf7-smtp-bridge' ) . '</p>';
+	}
+
+	/**
 	 * Render SMTP section description.
 	 *
 	 * @return void
 	 */
 	public function render_section_smtp(): void {
-		echo '<p>' . esc_html__( 'Configure the SMTP server that will be used to send all WordPress emails.', 'cf7-smtp-bridge' ) . '</p>';
+		$settings = self::get_settings();
+		$class    = 'gmail_api' === $settings['transport'] ? ' style="opacity:0.5;"' : '';
+		echo '<p' . $class . '>' . esc_html__( 'Configure the SMTP server that will be used to send all WordPress emails.', 'cf7-smtp-bridge' ) . '</p>';
+	}
+
+	/**
+	 * Render Gmail API section description.
+	 *
+	 * @return void
+	 */
+	public function render_section_gmail(): void {
+		$settings = self::get_settings();
+		$class    = 'smtp' === $settings['transport'] ? ' style="opacity:0.5;"' : '';
+		echo '<p' . $class . '>' . esc_html__( 'Configure Gmail API with OAuth 2.0 for reliable transactional email delivery via Google. Requires a project in Google Cloud Console with the Gmail API enabled.', 'cf7-smtp-bridge' ) . '</p>';
 	}
 
 	/**
@@ -349,10 +447,101 @@ class CF7_SMTP_Settings {
 	 * @return void
 	 */
 	public function render_section_logging(): void {
-		echo '<p>' . esc_html__( 'Enable detailed logging to help troubleshoot SMTP connection issues.', 'cf7-smtp-bridge' ) . '</p>';
+		echo '<p>' . esc_html__( 'Enable detailed logging to help troubleshoot mail transport issues.', 'cf7-smtp-bridge' ) . '</p>';
 	}
 
 	// ─── Field Renderers ───────────────────────────────────────────
+
+	/**
+	 * Render the transport method selector (radio buttons).
+	 *
+	 * @param array $args Field arguments.
+	 * @return void
+	 */
+	public function render_field_transport( array $args ): void {
+		$settings  = self::get_settings();
+		$transport = $settings['transport'] ?? 'smtp';
+		$name      = self::OPTION_NAME . '[transport]';
+		?>
+		<fieldset>
+			<label style="display:block; margin-bottom:8px;">
+				<input type="radio" name="<?php echo esc_attr( $name ); ?>" value="smtp"
+					<?php checked( $transport, 'smtp' ); ?> />
+				<strong><?php esc_html_e( 'SMTP', 'cf7-smtp-bridge' ); ?></strong>
+				&mdash; <?php esc_html_e( 'Traditional SMTP server (PHPMailer).', 'cf7-smtp-bridge' ); ?>
+			</label>
+			<label style="display:block; margin-bottom:8px;">
+				<input type="radio" name="<?php echo esc_attr( $name ); ?>" value="gmail_api"
+					<?php checked( $transport, 'gmail_api' ); ?> />
+				<strong><?php esc_html_e( 'Gmail API', 'cf7-smtp-bridge' ); ?></strong>
+				&mdash; <?php esc_html_e( 'Google Gmail REST API with OAuth 2.0 (recommended).', 'cf7-smtp-bridge' ); ?>
+			</label>
+		</fieldset>
+		<p class="description">
+			<?php esc_html_e( 'Gmail API is recommended for reliability and avoids SMTP port blocking.', 'cf7-smtp-bridge' ); ?>
+		</p>
+		<?php
+	}
+
+	/**
+	 * Render the OAuth status indicator and authorize/revoke buttons.
+	 *
+	 * @param array $args Field arguments.
+	 * @return void
+	 */
+	public function render_field_oauth_status( array $args ): void {
+		$settings = self::get_settings();
+		$status   = null;
+
+		if ( $this->oauth ) {
+			$status = $this->oauth->get_token_status();
+		}
+
+		if ( $status && $status['connected'] ) : ?>
+			<span class="cf7-smtp-oauth-badge cf7-smtp-oauth-connected">
+				&#10004; <?php esc_html_e( 'Connected', 'cf7-smtp-bridge' ); ?>
+			</span>
+			<span class="description" style="margin-left:10px;">
+				<?php
+				printf(
+					/* translators: %s: token expiration date */
+					esc_html__( 'Token expires: %s (auto-renews)', 'cf7-smtp-bridge' ),
+					esc_html( $status['expires_at'] )
+				);
+				?>
+			</span>
+			<br /><br />
+			<button type="button" id="cf7-smtp-revoke-oauth" class="button button-link-delete">
+				<?php esc_html_e( 'Revoke Authorization', 'cf7-smtp-bridge' ); ?>
+			</button>
+		<?php elseif ( $status && $status['expired'] ?? false ) : ?>
+			<span class="cf7-smtp-oauth-badge cf7-smtp-oauth-expired">
+				&#9888; <?php esc_html_e( 'Token expired — will auto-refresh on next send', 'cf7-smtp-bridge' ); ?>
+			</span>
+		<?php else : ?>
+			<span class="cf7-smtp-oauth-badge cf7-smtp-oauth-disconnected">
+				&#10060; <?php esc_html_e( 'Not connected', 'cf7-smtp-bridge' ); ?>
+			</span>
+			<?php
+			// Show authorize button if client_id is configured.
+			if ( ! empty( $settings['gmail_client_id'] ) ) :
+				$redirect_uri = admin_url( 'options-general.php?page=' . self::PAGE_SLUG );
+				$auth_url     = CF7_SMTP_OAuth::get_authorization_url( $settings['gmail_client_id'], $redirect_uri );
+				?>
+				<br /><br />
+				<a href="<?php echo esc_url( $auth_url ); ?>" class="button button-primary">
+					<?php esc_html_e( 'Authorize with Google', 'cf7-smtp-bridge' ); ?>
+				</a>
+				<p class="description">
+					<?php esc_html_e( 'Opens the Google consent screen. After approval, you will be redirected back here and the tokens will be saved automatically.', 'cf7-smtp-bridge' ); ?>
+				</p>
+			<?php else : ?>
+				<p class="description">
+					<?php esc_html_e( 'Enter your Client ID and Client Secret above, save settings, then click "Authorize with Google".', 'cf7-smtp-bridge' ); ?>
+				</p>
+			<?php endif; ?>
+		<?php endif;
+	}
 
 	/**
 	 * Render a text input field.
@@ -405,9 +594,9 @@ class CF7_SMTP_Settings {
 			$has_value ? esc_attr__( '••••••••  (saved — leave blank to keep)', 'cf7-smtp-bridge' ) : ''
 		);
 
-		if ( ! CF7_SMTP_Encryption::is_openssl_available() ) {
+		if ( 'smtp_password' === $id && ! CF7_SMTP_Encryption::is_openssl_available() ) {
 			echo '<p class="description" style="color:#d63638;">';
-			esc_html_e( 'Warning: OpenSSL is not available. The password will be stored with base64 encoding only (not encrypted).', 'cf7-smtp-bridge' );
+			esc_html_e( 'Warning: OpenSSL is not available. Secrets will be stored with base64 encoding only (not encrypted).', 'cf7-smtp-bridge' );
 			echo '</p>';
 		}
 
@@ -510,6 +699,12 @@ class CF7_SMTP_Settings {
 		$existing  = get_option( self::OPTION_NAME, array() );
 		$sanitized = array();
 
+		// Transport.
+		$sanitized['transport'] = in_array( ( $input['transport'] ?? '' ), array( 'smtp', 'gmail_api' ), true )
+			? $input['transport']
+			: 'smtp';
+
+		// SMTP fields.
 		$sanitized['smtp_host']       = sanitize_text_field( $input['smtp_host'] ?? '' );
 		$sanitized['smtp_port']       = absint( $input['smtp_port'] ?? 587 );
 		$sanitized['smtp_encryption'] = in_array( ( $input['smtp_encryption'] ?? '' ), array( 'tls', 'ssl', 'none' ), true )
@@ -517,7 +712,7 @@ class CF7_SMTP_Settings {
 			: 'tls';
 		$sanitized['smtp_username']   = sanitize_email( $input['smtp_username'] ?? '' );
 
-		// Password: encrypt before saving; keep existing if left blank.
+		// SMTP Password: encrypt before saving; keep existing if left blank.
 		$raw_password = $input['smtp_password'] ?? '';
 		if ( '' !== $raw_password ) {
 			$sanitized['smtp_password'] = CF7_SMTP_Encryption::encrypt( $raw_password );
@@ -525,22 +720,112 @@ class CF7_SMTP_Settings {
 			$sanitized['smtp_password'] = $existing['smtp_password'] ?? '';
 		}
 
+		// Gmail API fields.
+		$sanitized['gmail_client_id'] = sanitize_text_field( $input['gmail_client_id'] ?? '' );
+
+		$raw_secret = $input['gmail_client_secret'] ?? '';
+		if ( '' !== $raw_secret ) {
+			$sanitized['gmail_client_secret'] = CF7_SMTP_Encryption::encrypt( $raw_secret );
+		} else {
+			$sanitized['gmail_client_secret'] = $existing['gmail_client_secret'] ?? '';
+		}
+
+		$raw_refresh = $input['gmail_refresh_token'] ?? '';
+		if ( '' !== $raw_refresh ) {
+			$sanitized['gmail_refresh_token'] = CF7_SMTP_Encryption::encrypt( $raw_refresh );
+		} else {
+			$sanitized['gmail_refresh_token'] = $existing['gmail_refresh_token'] ?? '';
+		}
+
+		$sanitized['gmail_sender_email'] = sanitize_email( $input['gmail_sender_email'] ?? '' );
+
+		// Sender identity.
 		$sanitized['from_email'] = sanitize_email( $input['from_email'] ?? '' );
 		$sanitized['from_name']  = sanitize_text_field( $input['from_name'] ?? '' );
 
+		// Auto-reply.
 		$sanitized['enable_autoreply']  = ! empty( $input['enable_autoreply'] ) ? '1' : '0';
 		$sanitized['autoreply_subject'] = sanitize_text_field( $input['autoreply_subject'] ?? '' );
 		$sanitized['autoreply_body']    = sanitize_textarea_field( $input['autoreply_body'] ?? '' );
 
+		// CC / BCC.
 		$sanitized['enable_cc'] = ! empty( $input['enable_cc'] ) ? '1' : '0';
 		$sanitized['cc_email']  = sanitize_email( $input['cc_email'] ?? '' );
 		$sanitized['cc_type']   = in_array( ( $input['cc_type'] ?? '' ), array( 'cc', 'bcc' ), true )
 			? $input['cc_type']
 			: 'bcc';
 
+		// Logging.
 		$sanitized['enable_logging'] = ! empty( $input['enable_logging'] ) ? '1' : '0';
 
 		return $sanitized;
+	}
+
+	// ─── OAuth Callback Handler ────────────────────────────────────
+
+	/**
+	 * Handle the OAuth callback from Google after user authorization.
+	 *
+	 * Intercepts the admin page load when a 'code' parameter is present.
+	 *
+	 * @return void
+	 */
+	public function handle_oauth_callback(): void {
+		// phpcs:disable WordPress.Security.NonceVerification.Recommended -- OAuth callback from Google, no nonce possible.
+		if ( ! isset( $_GET['page'] ) || self::PAGE_SLUG !== $_GET['page'] ) {
+			return;
+		}
+
+		if ( ! isset( $_GET['code'] ) ) {
+			return;
+		}
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+
+		if ( ! $this->oauth ) {
+			return;
+		}
+
+		$code     = sanitize_text_field( wp_unslash( $_GET['code'] ) );
+		$settings = self::get_settings();
+
+		$redirect_uri = admin_url( 'options-general.php?page=' . self::PAGE_SLUG );
+
+		$tokens = $this->oauth->exchange_code_for_tokens(
+			$code,
+			$settings['gmail_client_id'],
+			$settings['gmail_client_secret'],
+			$redirect_uri
+		);
+		// phpcs:enable WordPress.Security.NonceVerification.Recommended
+
+		if ( false !== $tokens && ! empty( $tokens['refresh_token'] ) ) {
+			// Save the refresh token into settings for persistence.
+			$raw_settings = get_option( self::OPTION_NAME, array() );
+			$raw_settings['gmail_refresh_token'] = CF7_SMTP_Encryption::encrypt( $tokens['refresh_token'] );
+			update_option( self::OPTION_NAME, $raw_settings );
+
+			add_settings_error(
+				self::OPTION_GROUP,
+				'oauth_success',
+				__( 'Google OAuth authorization successful! Tokens have been saved.', 'cf7-smtp-bridge' ),
+				'success'
+			);
+		} else {
+			add_settings_error(
+				self::OPTION_GROUP,
+				'oauth_failed',
+				__( 'Google OAuth authorization failed. Check the debug log for details.', 'cf7-smtp-bridge' ),
+				'error'
+			);
+		}
+
+		// Redirect to remove 'code' from URL and prevent re-processing.
+		$clean_url = admin_url( 'options-general.php?page=' . self::PAGE_SLUG . '&settings-updated=true' );
+		wp_safe_redirect( $clean_url );
+		exit;
 	}
 
 	// ─── Page Renderer ─────────────────────────────────────────────
@@ -558,7 +843,26 @@ class CF7_SMTP_Settings {
 		$settings = self::get_settings();
 		?>
 		<div class="wrap cf7-smtp-wrap">
-			<h1><?php esc_html_e( 'CF7 SMTP Bridge Settings', 'cf7-smtp-bridge' ); ?></h1>
+			<h1>
+				<?php esc_html_e( 'CF7 SMTP Bridge Settings', 'cf7-smtp-bridge' ); ?>
+				<span class="cf7-smtp-version">v<?php echo esc_html( CF7_SMTP_BRIDGE_VERSION ); ?></span>
+			</h1>
+
+			<?php
+			// Show which transport is active.
+			$active_transport = 'gmail_api' === $settings['transport']
+				? __( 'Gmail API (OAuth 2.0)', 'cf7-smtp-bridge' )
+				: __( 'SMTP', 'cf7-smtp-bridge' );
+			?>
+			<div class="cf7-smtp-active-transport">
+				<?php
+				printf(
+					/* translators: %s: active transport name */
+					esc_html__( 'Active transport: %s', 'cf7-smtp-bridge' ),
+					'<strong>' . esc_html( $active_transport ) . '</strong>'
+				);
+				?>
+			</div>
 
 			<?php settings_errors(); ?>
 
@@ -573,8 +877,16 @@ class CF7_SMTP_Settings {
 			<hr />
 
 			<!-- Test Connection Button -->
-			<h2><?php esc_html_e( 'Test SMTP Connection', 'cf7-smtp-bridge' ); ?></h2>
-			<p class="description"><?php esc_html_e( 'Click the button below to send a test email to the admin address and verify your SMTP settings.', 'cf7-smtp-bridge' ); ?></p>
+			<h2><?php esc_html_e( 'Test Mail Transport', 'cf7-smtp-bridge' ); ?></h2>
+			<p class="description">
+				<?php
+				printf(
+					/* translators: %s: transport name */
+					esc_html__( 'Send a test email using the current transport (%s) to the admin address.', 'cf7-smtp-bridge' ),
+					esc_html( $active_transport )
+				);
+				?>
+			</p>
 			<p>
 				<button type="button" id="cf7-smtp-test-btn" class="button button-secondary">
 					<?php esc_html_e( 'Send Test Email', 'cf7-smtp-bridge' ); ?>
@@ -597,6 +909,7 @@ class CF7_SMTP_Settings {
 
 		<script>
 		(function(){
+			/* ── Test Email ────────────────────────────────── */
 			var testBtn   = document.getElementById('cf7-smtp-test-btn');
 			var testResult = document.getElementById('cf7-smtp-test-result');
 
@@ -628,6 +941,7 @@ class CF7_SMTP_Settings {
 				});
 			}
 
+			/* ── Clear Log ─────────────────────────────────── */
 			var clearBtn = document.getElementById('cf7-smtp-clear-log');
 			if (clearBtn) {
 				clearBtn.addEventListener('click', function(){
@@ -643,6 +957,51 @@ class CF7_SMTP_Settings {
 					xhr.send('action=cf7_smtp_clear_log&_wpnonce=<?php echo esc_js( wp_create_nonce( 'cf7_smtp_clear_log' ) ); ?>');
 				});
 			}
+
+			/* ── Revoke OAuth ──────────────────────────────── */
+			var revokeBtn = document.getElementById('cf7-smtp-revoke-oauth');
+			if (revokeBtn) {
+				revokeBtn.addEventListener('click', function(){
+					if (!confirm('<?php echo esc_js( __( 'Revoke the stored OAuth tokens? You will need to re-authorize.', 'cf7-smtp-bridge' ) ); ?>')) return;
+
+					revokeBtn.disabled = true;
+
+					var xhr = new XMLHttpRequest();
+					xhr.open('POST', '<?php echo esc_url( admin_url( 'admin-ajax.php' ) ); ?>');
+					xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+					xhr.onload = function(){ location.reload(); };
+					xhr.send('action=cf7_smtp_revoke_oauth&_wpnonce=<?php echo esc_js( wp_create_nonce( 'cf7_smtp_revoke_oauth' ) ); ?>');
+				});
+			}
+
+			/* ── Transport Visibility Toggle ───────────────── */
+			var transportRadios = document.querySelectorAll('input[name="<?php echo esc_js( self::OPTION_NAME ); ?>[transport]"]');
+			function toggleSections() {
+				var val = document.querySelector('input[name="<?php echo esc_js( self::OPTION_NAME ); ?>[transport]"]:checked');
+				if (!val) return;
+				var isGmail = val.value === 'gmail_api';
+
+				var smtpSection = document.getElementById('cf7_smtp_section_smtp');
+				var gmailSection = document.getElementById('cf7_smtp_section_gmail');
+
+				// Find parent <table> elements for each section.
+				if (smtpSection) {
+					var smtpTable = smtpSection.nextElementSibling;
+					if (smtpTable) smtpTable.style.opacity = isGmail ? '0.4' : '1';
+					smtpSection.style.opacity = isGmail ? '0.5' : '1';
+				}
+				if (gmailSection) {
+					var gmailTable = gmailSection.nextElementSibling;
+					if (gmailTable) gmailTable.style.opacity = isGmail ? '1' : '0.4';
+					gmailSection.style.opacity = isGmail ? '1' : '0.5';
+				}
+			}
+
+			transportRadios.forEach(function(r) {
+				r.addEventListener('change', toggleSections);
+			});
+
+			toggleSections();
 		})();
 		</script>
 		<?php
@@ -662,20 +1021,33 @@ class CF7_SMTP_Settings {
 			wp_send_json_error( __( 'Unauthorized.', 'cf7-smtp-bridge' ) );
 		}
 
-		$to      = get_option( 'admin_email' );
-		$subject = __( '[CF7 SMTP Bridge] Test Email', 'cf7-smtp-bridge' );
-		$body    = __( 'This is a test email from CF7 SMTP Bridge. If you see this, your SMTP settings are working correctly.', 'cf7-smtp-bridge' );
+		$settings  = self::get_settings();
+		$transport = 'gmail_api' === $settings['transport'] ? 'Gmail API' : 'SMTP';
+		$to        = get_option( 'admin_email' );
+		$subject   = sprintf(
+			/* translators: %s: transport name */
+			__( '[CF7 SMTP Bridge] Test Email via %s', 'cf7-smtp-bridge' ),
+			$transport
+		);
+		$body    = sprintf(
+			/* translators: %s: transport name */
+			__( 'This is a test email from CF7 SMTP Bridge using the %s transport. If you see this, your settings are working correctly.', 'cf7-smtp-bridge' ),
+			$transport
+		);
 		$headers = array( 'Content-Type: text/plain; charset=UTF-8' );
 
 		$result = wp_mail( $to, $subject, $body, $headers );
 
 		if ( $result ) {
 			wp_send_json_success(
-				/* translators: %s: admin email */
-				sprintf( __( 'Test email sent successfully to %s.', 'cf7-smtp-bridge' ), $to )
+				/* translators: 1: admin email, 2: transport name */
+				sprintf( __( 'Test email sent successfully to %1$s via %2$s.', 'cf7-smtp-bridge' ), $to, $transport )
 			);
 		} else {
-			wp_send_json_error( __( 'Failed to send test email. Check the debug log for details.', 'cf7-smtp-bridge' ) );
+			wp_send_json_error(
+				/* translators: %s: transport name */
+				sprintf( __( 'Failed to send test email via %s. Check the debug log for details.', 'cf7-smtp-bridge' ), $transport )
+			);
 		}
 	}
 
@@ -692,6 +1064,30 @@ class CF7_SMTP_Settings {
 		}
 
 		$this->logger->clear();
+		wp_send_json_success();
+	}
+
+	/**
+	 * AJAX handler: revoke OAuth tokens.
+	 *
+	 * @return void
+	 */
+	public function ajax_revoke_oauth(): void {
+		check_ajax_referer( 'cf7_smtp_revoke_oauth', '_wpnonce' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( __( 'Unauthorized.', 'cf7-smtp-bridge' ) );
+		}
+
+		if ( $this->oauth ) {
+			$this->oauth->clear_tokens();
+		}
+
+		// Also clear refresh token from settings.
+		$raw_settings = get_option( self::OPTION_NAME, array() );
+		$raw_settings['gmail_refresh_token'] = '';
+		update_option( self::OPTION_NAME, $raw_settings );
+
 		wp_send_json_success();
 	}
 }

@@ -2,11 +2,12 @@
 /**
  * Uninstall handler for CF7 SMTP Bridge.
  *
- * Removes all plugin options and log files when the plugin is
- * deleted through the WordPress admin.
+ * Removes all plugin options, OAuth tokens, and log files when the plugin
+ * is deleted through the WordPress admin.
  *
  * @package CF7_SMTP_Bridge
  * @since   1.0.0
+ * @since   2.0.0 Added OAuth token cleanup.
  */
 
 if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
@@ -15,6 +16,9 @@ if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 
 // Remove plugin options.
 delete_option( 'cf7_smtp_bridge_settings' );
+
+// Remove OAuth tokens.
+delete_option( 'cf7_smtp_bridge_oauth_tokens' );
 
 // Remove log directory.
 $upload_dir = wp_upload_dir();

@@ -3,7 +3,25 @@
  *
  * @package CF7_SMTP_Bridge
  * @since   1.0.0
+ * @since   2.0.0 Added transport and OAuth styles.
  */
+
+/* ── Layout ─────────────────────────────────────── */
+
+.cf7-smtp-wrap h1 {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.cf7-smtp-version {
+	font-size: 12px;
+	font-weight: 400;
+	color: #787c82;
+	background: #f0f0f1;
+	padding: 2px 8px;
+	border-radius: 3px;
+}
 
 .cf7-smtp-wrap h2 {
 	margin-top: 2em;
@@ -14,6 +32,18 @@
 .cf7-smtp-wrap .form-table th {
 	width: 200px;
 }
+
+/* ── Active Transport Banner ────────────────────── */
+
+.cf7-smtp-active-transport {
+	margin: 12px 0 16px;
+	padding: 10px 14px;
+	background: #f0f6fc;
+	border-left: 4px solid #2271b1;
+	font-size: 14px;
+}
+
+/* ── Log Viewer ─────────────────────────────────── */
 
 .cf7-smtp-log {
 	max-height: 400px;
@@ -29,13 +59,59 @@
 	word-wrap: break-word;
 }
 
+/* ── Test Button Result ─────────────────────────── */
+
 #cf7-smtp-test-result {
 	font-weight: 600;
 }
 
-/* Responsive adjustments */
+/* ── OAuth Status Badges ────────────────────────── */
+
+.cf7-smtp-oauth-badge {
+	display: inline-block;
+	padding: 4px 12px;
+	border-radius: 3px;
+	font-size: 13px;
+	font-weight: 500;
+	line-height: 1.6;
+}
+
+.cf7-smtp-oauth-connected {
+	background: #edfaef;
+	color: #00a32a;
+	border: 1px solid #00a32a;
+}
+
+.cf7-smtp-oauth-expired {
+	background: #fef8ee;
+	color: #dba617;
+	border: 1px solid #dba617;
+}
+
+.cf7-smtp-oauth-disconnected {
+	background: #fcf0f1;
+	color: #d63638;
+	border: 1px solid #d63638;
+}
+
+/* ── Transport Radio Buttons ────────────────────── */
+
+.cf7-smtp-wrap fieldset label {
+	padding: 6px 0;
+}
+
+.cf7-smtp-wrap fieldset label strong {
+	font-size: 14px;
+}
+
+/* ── Responsive ─────────────────────────────────── */
+
 @media screen and (max-width: 782px) {
 	.cf7-smtp-wrap .form-table th {
 		width: auto;
+	}
+
+	.cf7-smtp-version {
+		display: none;
 	}
 }

@@ -2,11 +2,11 @@
 /**
  * Plugin Name: CF7 SMTP Bridge
  * Plugin URI:  https://github.com/wichosaenz/smtp-contact-form7
- * Description: Advanced SMTP bridge for WordPress and Contact Form 7. Configures SMTP sending, auto-reply confirmations, and CC/BCC internal notifications.
- * Version:     1.0.0
+ * Description: Advanced mail transport bridge for WordPress and Contact Form 7. Supports SMTP and Gmail API (OAuth 2.0) with auto-reply confirmations and CC/BCC internal notifications.
+ * Version:     2.0.0
  * Requires at least: 6.0
  * Requires PHP: 8.2
- * Author:      CF7 SMTP Bridge Contributors
+ * Author:      The Everest Group
  * Author URI:  https://github.com/wichosaenz
  * License:     GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -25,7 +25,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  *
  * @var string
  */
-define( 'CF7_SMTP_BRIDGE_VERSION', '1.0.0' );
+define( 'CF7_SMTP_BRIDGE_VERSION', '2.0.0' );
 
 /**
  * Plugin file path constant.
@@ -45,6 +45,7 @@ define( 'CF7_SMTP_BRIDGE_DIR', plugin_dir_path( __FILE__ ) );
  * Main plugin class — singleton that bootstraps all components.
  *
  * @since 1.0.0
+ * @since 2.0.0 Added Gmail API transport and OAuth 2.0 support.
  */
 final class CF7_SMTP_Bridge {
 
@@ -61,6 +62,13 @@ final class CF7_SMTP_Bridge {
 	 * @var CF7_SMTP_Logger
 	 */
 	private CF7_SMTP_Logger $logger;
+
+	/**
+	 * OAuth handler instance.
+	 *
+	 * @var CF7_SMTP_OAuth
+	 */
+	private CF7_SMTP_OAuth $oauth;
 
 	/**
 	 * Get the singleton instance.
@@ -80,7 +88,10 @@ final class CF7_SMTP_Bridge {
 	 */
 	private function __construct() {
 		$this->load_dependencies();
+
 		$this->logger = new CF7_SMTP_Logger();
+		$this->oauth  = new CF7_SMTP_OAuth( $this->logger );
+
 		$this->init_components();
 		$this->register_activation_hooks();
 	}
@@ -95,8 +106,10 @@ final class CF7_SMTP_Bridge {
 
 		require_once $includes . 'class-cf7-smtp-encryption.php';
 		require_once $includes . 'class-cf7-smtp-logger.php';
+		require_once $includes . 'class-cf7-smtp-oauth.php';
 		require_once $includes . 'class-cf7-smtp-settings.php';
 		require_once $includes . 'class-cf7-smtp-mailer.php';
+		require_once $includes . 'class-cf7-smtp-gmail-api.php';
 		require_once $includes . 'class-cf7-smtp-cf7-integration.php';
 	}
 
@@ -108,15 +121,24 @@ final class CF7_SMTP_Bridge {
 	private function init_components(): void {
 		// Admin settings page.
 		if ( is_admin() ) {
-			$settings = new CF7_SMTP_Settings( $this->logger );
+			$settings = new CF7_SMTP_Settings( $this->logger, $this->oauth );
 			$settings->init();
 		}
 
-		// SMTP Mailer (runs on both front and admin).
-		$mailer = new CF7_SMTP_Mailer( $this->logger );
-		$mailer->init();
+		// Initialize the correct transport based on settings.
+		$plugin_settings = CF7_SMTP_Settings::get_settings();
 
-		// CF7 integration (runs on both front and admin).
+		if ( 'gmail_api' === ( $plugin_settings['transport'] ?? 'smtp' ) ) {
+			// Gmail API transport (replaces wp_mail via pre_wp_mail).
+			$gmail_api = new CF7_SMTP_Gmail_API( $this->logger, $this->oauth );
+			$gmail_api->init();
+		} else {
+			// Legacy SMTP transport (reconfigures PHPMailer).
+			$mailer = new CF7_SMTP_Mailer( $this->logger );
+			$mailer->init();
+		}
+
+		// CF7 integration — works with either transport.
 		$cf7_integration = new CF7_SMTP_CF7_Integration( $this->logger );
 		$cf7_integration->init();
 	}
@@ -142,7 +164,7 @@ final class CF7_SMTP_Bridge {
 			add_option( CF7_SMTP_Settings::OPTION_NAME, CF7_SMTP_Settings::get_defaults() );
 		}
 
-		$this->logger->info( 'CF7 SMTP Bridge activated.' );
+		$this->logger->info( 'CF7 SMTP Bridge v' . CF7_SMTP_BRIDGE_VERSION . ' activated.' );
 	}
 
 	/**
