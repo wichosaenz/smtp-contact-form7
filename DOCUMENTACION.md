@@ -1,4 +1,4 @@
-# CF7 SMTP Bridge — Documentación v2.0
+# CF7 SMTP Bridge — Documentación v2.1
 
 ## ¿Qué es este plugin?
 
@@ -211,6 +211,66 @@ The Everest Group
 ### CC/BCC Interno
 
 Habilita CC/BCC en los ajustes para que cada envío de formulario envíe automáticamente una copia al equipo interno (configurable como CC visible o BCC oculto).
+
+---
+
+## Novedades en v2.1: Soporte para Alias y Cuentas Enmascaradas
+
+### El Problema (v2.0)
+
+En la versión 2.0, al autenticar con una cuenta primaria (ej: `joseluis@theeverestgroup.mx`) y configurar un alias diferente como remitente (ej: `expansion@theeverestgroup.mx`), la API de Gmail **ignoraba el alias** y forzaba el envío con la cuenta primaria. Esto ocurría porque:
+
+1. La cabecera `From:` podía ser sobrescrita por headers de `wp_mail()` entrantes
+2. No se incluía la cabecera `Sender:` que Gmail necesita para validar alias
+3. La prioridad de resolución del From era incorrecta
+
+### La Solución (v2.1)
+
+Se reestructuró completamente la lógica de resolución del remitente en `build_mime_message()`:
+
+**Nueva prioridad del campo From:**
+
+| Prioridad | Campo | Descripción |
+|-----------|-------|-------------|
+| 1 (mayor) | `gmail_sender_email` | El alias configurado en el plugin — **siempre gana** |
+| 2 | `from_email` | Override genérico de identidad del remitente |
+| 3 (menor) | headers de `wp_mail()` | Fallback si no hay nada configurado |
+
+**Cabeceras MIME generadas:**
+
+```
+From: =?UTF-8?B?{Nombre_en_Base64}?= <expansion@theeverestgroup.mx>
+Sender: expansion@theeverestgroup.mx
+```
+
+- La cabecera `From:` lleva el alias con el nombre codificado en RFC 2047
+- La cabecera `Sender:` indica a Gmail que el envío es legítimo desde esa dirección
+- Gmail valida que el alias esté configurado en "Enviar mensaje como" y lo respeta
+
+### Requisito Previo en Google Workspace
+
+Para que el alias funcione, **debe estar previamente configurado** en la cuenta de Google:
+
+1. Inicia sesión en Gmail con la cuenta primaria (`joseluis@theeverestgroup.mx`)
+2. Ve a **Configuración** (engranaje) > **Ver todos los ajustes**
+3. Pestaña **Cuentas** (o "Accounts and Import")
+4. En **"Enviar mensaje como"** ("Send mail as"), haz clic en **"Añadir otra dirección de correo"**
+5. Ingresa el alias: `expansion@theeverestgroup.mx`
+6. Completa la verificación (Google enviará un código de confirmación)
+7. Una vez verificado, el alias aparecerá en la lista
+
+Después de esto, configura el mismo alias en **Ajustes > CF7 SMTP Bridge > Sender Email (or Alias)**.
+
+### Log de Verificación
+
+Cuando el envío funciona correctamente, el log muestra:
+
+```
+[INFO] Gmail API: From address resolved to: expansion@theeverestgroup.mx (name: The Everest Group)
+[INFO] Gmail API: Intercepting wp_mail() for: destinatario@ejemplo.com
+[INFO] Gmail API: Sending message via REST API...
+[INFO] Gmail API: Message sent successfully. Gmail Message ID: 18f2a3b4c5d6e7f8
+```
 
 ---
 

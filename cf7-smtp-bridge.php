@@ -3,7 +3,7 @@
  * Plugin Name: CF7 SMTP Bridge
  * Plugin URI:  https://github.com/wichosaenz/smtp-contact-form7
  * Description: Advanced mail transport bridge for WordPress and Contact Form 7. Supports SMTP and Gmail API (OAuth 2.0) with auto-reply confirmations and CC/BCC internal notifications.
- * Version:     2.0.0
+ * Version:     2.1.0
  * Requires at least: 6.0
  * Requires PHP: 8.2
  * Author:      The Everest Group
@@ -25,7 +25,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  *
  * @var string
  */
-define( 'CF7_SMTP_BRIDGE_VERSION', '2.0.0' );
+define( 'CF7_SMTP_BRIDGE_VERSION', '2.1.0' );
 
 /**
  * Plugin file path constant.
@@ -46,6 +46,7 @@ define( 'CF7_SMTP_BRIDGE_DIR', plugin_dir_path( __FILE__ ) );
  *
  * @since 1.0.0
  * @since 2.0.0 Added Gmail API transport and OAuth 2.0 support.
+ * @since 2.1.0 Alias/masked sender support for Gmail API.
  */
 final class CF7_SMTP_Bridge {
 

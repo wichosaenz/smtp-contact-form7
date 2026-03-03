@@ -11,6 +11,7 @@
  *
  * @package CF7_SMTP_Bridge
  * @since   2.0.0
+ * @since   2.1.0 Force alias/masked sender via explicit From + Sender MIME headers.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -155,26 +156,64 @@ class CF7_SMTP_Gmail_API {
 		$content_type = $parsed['content_type'] ?? 'text/plain';
 		$charset      = $parsed['charset'] ?? 'UTF-8';
 
-		// From address.
-		$from_email = $parsed['from_email'] ?? ( $settings['from_email'] ?: $settings['gmail_sender_email'] );
-		$from_name  = $parsed['from_name'] ?? ( $settings['from_name'] ?: get_bloginfo( 'name' ) );
+		// ── From / Sender resolution (v2.1 — alias support) ──────
+		//
+		// Priority for the From address:
+		//   1. gmail_sender_email (the alias configured in the plugin)
+		//   2. from_email (generic sender identity override)
+		//   3. from_email parsed from wp_mail() headers (fallback)
+		//
+		// When gmail_sender_email is set we ALWAYS use it as From,
+		// regardless of what wp_mail() headers say, because this is
+		// the whole point: force the alias in the MIME envelope so
+		// Gmail respects it instead of overwriting with the primary.
+		//
+		// We also inject a Sender: header pointing to the primary
+		// account (gmail_sender_email or smtp_username). Gmail uses
+		// this to validate that the authenticated account is allowed
+		// to send on behalf of the From address.
 
-		if ( empty( $from_email ) ) {
-			$this->logger->error( 'Gmail API: No from email configured.' );
+		$configured_alias = $settings['gmail_sender_email'] ?? '';
+		$configured_from  = $settings['from_email'] ?? '';
+		$parsed_from      = $parsed['from_email'] ?? '';
+
+		// Determine the actual From email — alias always wins.
+		if ( ! empty( $configured_alias ) ) {
+			$from_email = $configured_alias;
+		} elseif ( ! empty( $configured_from ) ) {
+			$from_email = $configured_from;
+		} elseif ( ! empty( $parsed_from ) ) {
+			$from_email = $parsed_from;
+		} else {
+			$this->logger->error( 'Gmail API: No from/sender email configured.' );
 			return false;
 		}
 
-		$from = ! empty( $from_name )
+		// Determine the display name.
+		$from_name = $settings['from_name'] ?: ( $parsed['from_name'] ?? get_bloginfo( 'name' ) );
+
+		// Build the RFC 2047 encoded From header value.
+		$from_header = ! empty( $from_name )
 			? sprintf( '=?UTF-8?B?%s?= <%s>', base64_encode( $from_name ), $from_email )
 			: $from_email;
+
+		$this->log( 'Gmail API: From address resolved to: ' . $from_email . ' (name: ' . $from_name . ')' );
 
 		// Build the MIME message.
 		$boundary    = 'cf7_smtp_' . wp_generate_password( 24, false );
 		$has_attach  = ! empty( $attachments ) && is_array( $attachments );
 		$mime_parts  = array();
 
-		// Required headers.
-		$mime_parts[] = 'From: ' . $from;
+		// Required headers — From is ALWAYS the configured alias.
+		$mime_parts[] = 'From: ' . $from_header;
+
+		// Sender header: tells Gmail which authenticated account is
+		// sending on behalf of the From address. This is required for
+		// aliases configured via "Send mail as" in Gmail/Workspace.
+		// If the From is the same as the authenticated account, Gmail
+		// simply ignores the Sender header (harmless).
+		$mime_parts[] = 'Sender: ' . $from_email;
+
 		$mime_parts[] = 'To: ' . $to;
 		$mime_parts[] = 'Subject: =?UTF-8?B?' . base64_encode( $subject ) . '?=';
 		$mime_parts[] = 'MIME-Version: 1.0';
